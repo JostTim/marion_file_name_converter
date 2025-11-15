@@ -3,7 +3,54 @@ from pathlib import Path
 from dataclasses import dataclass, field
 import click
 from colorama import Fore, Style
-from typing import Literal, Set, Any
+from typing import Literal, Set, Any, Dict, Type
+from abc import ABC, abstractmethod
+
+
+class MatcherAction(ABC):
+    @abstractmethod
+    def matches(self, item_name: str) -> bool: ...
+
+    @classmethod
+    @abstractmethod
+    def replace(cls, item_name: str) -> str: ...
+
+    def __init__(self, name: str):
+        self.name = name
+
+    # def __contains__(self, item_name: str) -> bool:
+    #     return self.matches(item_name)
+
+    def __str__(self) -> str:
+        return self.name
+
+    def __repr__(self) -> str:
+        return self.name
+
+    def __hash__(self) -> int:
+        return hash(str(self))
+
+
+class MultiProblems:
+    def __init__(self, problems: Set[str | MatcherAction]):
+        self.problems = problems
+
+    def __str__(self):
+        return str(sorted([self.problems]))
+
+    def __repr__(self) -> str:
+        return self.__str__()
+
+    def __hash__(self) -> int:
+        return hash(str(self))
+
+    def __eq__(self, multi_problem: object) -> bool:
+        if not isinstance(multi_problem, MultiProblems):
+            raise NotImplementedError
+        return self.__hash__() == multi_problem.__hash__()
+
+
+MatchMapping = Dict[str | MatcherAction, str | Type[MatcherAction]]
 
 
 CYCLE_CHAR = "."
@@ -48,7 +95,7 @@ class FileSystemItem:
     type: Literal["file", "directory"]
     invalid: bool
     path: Path
-    problems: Set[str]
+    problems: Set[str | MatcherAction]
 
 
 @dataclass
@@ -60,7 +107,7 @@ class FileSystemData:
         type: Literal["file", "directory"],
         invalid: bool,
         path: Path,
-        problems: Set[str],
+        problems: Set[str | MatcherAction],
     ):
         self.scanned_items.append(
             FileSystemItem(type=type, invalid=invalid, path=path, problems=problems)
@@ -101,13 +148,13 @@ class FileSystemData:
     @property
     def problematic_files_types(self):
         unique_problems = set(
-            [str(sorted(item.problems)) for item in self.problematic_files]
+            [MultiProblems(item.problems) for item in self.problematic_files]
         )
         return {
             problem_key: [
                 item
                 for item in self.problematic_files
-                if str(sorted(item.problems)) == problem_key
+                if MultiProblems(item.problems) == problem_key
             ]
             for problem_key in unique_problems
         }
@@ -115,13 +162,13 @@ class FileSystemData:
     @property
     def problematic_directories_types(self):
         unique_problems = set(
-            [str(sorted(item.problems)) for item in self.problematic_directories]
+            [MultiProblems(item.problems) for item in self.problematic_directories]
         )
         return {
             problem_key: [
                 item
                 for item in self.problematic_directories
-                if str(sorted(item.problems)) == problem_key
+                if MultiProblems(item.problems) == problem_key
             ]
             for problem_key in unique_problems
         }
@@ -146,7 +193,7 @@ def parse_item(
     item_name: str,
     item_type: Literal["file", "directory"],
     data: FileSystemData,
-    forbidden_characters_mapping: dict[str, str],
+    forbidden_characters_mapping: MatchMapping,
 ):
     invalidity, problems = is_item_invalid(item_name, forbidden_characters_mapping)
     data.add(
@@ -157,12 +204,25 @@ def parse_item(
     )
 
 
-def is_item_invalid(item_name: str, forbidden_characters_mapping: dict[str, str]):
+def is_item_invalid(
+    item_name: str,
+    forbidden_characters_mapping: MatchMapping,
+) -> tuple[bool, Set[str | MatcherAction]]:
     problems = set(
-        [char for char in forbidden_characters_mapping.keys() if char in item_name]
+        [
+            char
+            for char in forbidden_characters_mapping.keys()
+            if (isinstance(char, str) and char in item_name)
+            or isinstance(char, MatcherAction)
+            and char.matches(item_name)
+        ]
     )
-    if item_name.endswith((",", " ")):
-        problems.add("termination")
+
+    # problems = set(
+    #     [char for char in forbidden_characters_mapping.keys() if char in item_name]
+    # )
+    # if item_name.endswith((",", " ")):
+    #     problems.add("termination")
     if len(problems):
         return True, problems
     return False, set()
@@ -220,7 +280,7 @@ def run(path: str):
         f"problematic repositories.{Style.RESET_ALL}"
     )
 
-    def format_mapping_results(mapping: dict[str, Any]):
+    def format_mapping_results(mapping: dict[MultiProblems, int]):
         return "\n".join(
             [
                 f" - {Fore.GREEN}{key}{Fore.BLUE} contains {Fore.CYAN}{value}{Fore.RESET}"
@@ -245,48 +305,68 @@ def run(path: str):
         for problem_name, items in problem_dictionnary.items():
             click.echo(f"{Fore.BLUE}Problem {Fore.GREEN}{problem_name}{Fore.RESET}")
             for item in items:
-                click.prompt(
-                    f" - {Fore.BLUE}{item.type.capitalize()} : {Fore.YELLOW}{item.path}{Fore.BLUE} will be renamed into "
-                    f"{Fore.YELLOW}{get_item_renamed_path(item, forbidden_characters_mapping)}{Fore.BLUE}. "
+                renamed_path = get_item_renamed_path(item, forbidden_characters_mapping)
+                agreed = click.confirm(
+                    f" - {Fore.BLUE}{item.type.capitalize()} : {Fore.YELLOW}{item.path}{Fore.BLUE} "
+                    "will be renamed into "
+                    f"{Fore.YELLOW}{renamed_path}{Fore.BLUE}. "
                     f"{Fore.LIGHTMAGENTA_EX}Do you agree to proceed ?{Fore.RESET}",
                     prompt_suffix="",
-                    default="",
+                    default=True,
                     show_default=False,
                 )
 
+                if agreed:
+                    item.path.rename(renamed_path)
+                    click.echo(
+                        f"{Fore.GREEN}✅ Renamed {Fore.YELLOW}{renamed_path}{Fore.GREEN} succesfully.{Fore.RESET}"
+                    )
+                else:
+                    click.echo(f"{Fore.RED}🚫 Did not rename. {Fore.RESET}")
+
 
 def get_item_renamed_path(
-    item: FileSystemItem, forbidden_characters_mapping: dict[str, str]
+    item: FileSystemItem, forbidden_characters_mapping: MatchMapping
 ):
     if not item.invalid:
         return item.path
     new_path = item.path
     for problem in item.problems:
-        if problem == "termination":
-            new_path = new_path.parent / str(new_path.name).rstrip(" ").rstrip(
-                ","
-            ).rstrip(" ")
-        else:
+        if isinstance(problem, str):
             new_path = new_path.parent / str(new_path.name).replace(
                 problem, forbidden_characters_mapping[problem]
             )
+
+            # problem.
+            # new_path = new_path.parent / str(new_path.name).rstrip(" ").rstrip(
+            #     ","
+            # ).rstrip(" ")
+        elif isinstance(problem, MatcherAction):
+            new_path = new_path.parent / problem.replace(new_path.name)
+
+            # new_path = new_path.parent / str(new_path.name).replace(
+            #     problem, forbidden_characters_mapping[problem]
+            # )
     return new_path
 
 
 def get_forbidden_characters():
-    forbidden_characters = [
-        "<",
-        ">",
-        ":",
-        '"',
-        "|",
-        "?",
-        "*",
-        "\uf022",
-        "\\",
-        "\r",
-    ]
-    forbidden_mapping = {k: k for k in forbidden_characters}
+    forbidden_mapping: MatchMapping
+
+    class Termination(MatcherAction):
+        def matches(self, item_name: str):
+            return item_name.endswith((",", " ", ".", "\uf022"))
+
+        @classmethod
+        def replace(cls, item_name: str):
+            return (
+                item_name.rstrip(" ")
+                .rstrip(",")
+                .rstrip(".")
+                .rstrip("\uf022")
+                .rstrip(" ")
+            )
+
     forbidden_mapping = {
         "<": "(",
         ">": ")",
@@ -297,7 +377,9 @@ def get_forbidden_characters():
         "*": "x",
         "\uf022": "-",
         "\\": "_",
+        "/": "_",
         "\r": "",
+        Termination("termination"): Termination,
     }
 
     def format_characters():
@@ -310,7 +392,7 @@ def get_forbidden_characters():
         )
 
     def char_validation(char):
-        if any([c in char for c in forbidden_characters]):
+        if any([c in char for c in forbidden_mapping.keys()]):
             raise ValueError(f"{Fore.BLUE}Forbidden character{Fore.RESET}")
         return str(char)
 
@@ -323,7 +405,7 @@ def get_forbidden_characters():
             break
         edit_source_char = click.prompt(
             f"{Fore.LIGHTMAGENTA_EX}What character to edit ?{Fore.RESET}",
-            type=click.Choice(forbidden_characters),
+            type=click.Choice(forbidden_mapping.keys()),
         )
         while True:
             try:
