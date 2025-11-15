@@ -371,9 +371,9 @@ def get_forbidden_characters():
         "<": "(",
         ">": ")",
         ":": "-",
-        '"': "-",
+        '"': "",
         "|": "_",
-        "?": ".",
+        "?": "-",
         "*": "x",
         "\uf022": "-",
         "\\": "_",
@@ -392,7 +392,7 @@ def get_forbidden_characters():
         )
 
     def char_validation(char):
-        if any([c in char for c in forbidden_mapping.keys()]):
+        if any([c in char for c in forbidden_mapping.keys() if isinstance(c, str)]):
             raise ValueError(f"{Fore.BLUE}Forbidden character{Fore.RESET}")
         return str(char)
 
@@ -405,7 +405,9 @@ def get_forbidden_characters():
             break
         edit_source_char = click.prompt(
             f"{Fore.LIGHTMAGENTA_EX}What character to edit ?{Fore.RESET}",
-            type=click.Choice(forbidden_mapping.keys()),
+            type=click.Choice(
+                [char for char in forbidden_mapping.keys() if isinstance(char, str)]
+            ),
         )
         while True:
             try:
