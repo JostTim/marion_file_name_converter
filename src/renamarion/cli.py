@@ -18,9 +18,6 @@ class MatcherAction(ABC):
     def __init__(self, name: str):
         self.name = name
 
-    # def __contains__(self, item_name: str) -> bool:
-    #     return self.matches(item_name)
-
     def __str__(self) -> str:
         return self.name
 
@@ -332,21 +329,20 @@ def get_item_renamed_path(
         return item.path
     new_path = item.path
     for problem in item.problems:
-        if isinstance(problem, str):
+        if isinstance(problem, str) and isinstance(
+            replacement := forbidden_characters_mapping[problem], str
+        ):
             new_path = new_path.parent / str(new_path.name).replace(
-                problem, forbidden_characters_mapping[problem]
+                problem, replacement
             )
 
-            # problem.
-            # new_path = new_path.parent / str(new_path.name).rstrip(" ").rstrip(
-            #     ","
-            # ).rstrip(" ")
         elif isinstance(problem, MatcherAction):
             new_path = new_path.parent / problem.replace(new_path.name)
 
-            # new_path = new_path.parent / str(new_path.name).replace(
-            #     problem, forbidden_characters_mapping[problem]
-            # )
+        else:
+            click.echo(
+                f"{Fore.RED}The problem {Fore.YELLOW}{problem}{Fore.RED} was not possible to treat.{Fore.RESET}"
+            )
     return new_path
 
 
